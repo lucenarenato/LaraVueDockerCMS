@@ -1,0 +1,134 @@
+version: "3.9"
+
+services:
+    # image project
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        restart: unless-stopped
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        working_dir: /var/www/
+        environment:
+            LARAVEL_SAIL: 1
+            XDEBUG_MODE: "${SAIL_XDEBUG_MODE:-off}"
+            XDEBUG_CONFIG: "${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}"
+            IGNITION_LOCAL_SITES_PATH: "${PWD}"
+        volumes:
+            - ./:/var/www
+            - ./docker/init-scripts/:/init-scripts/
+        # entrypoint:
+        #     - /init-scripts/apache_start.sh
+        depends_on:
+            - redis
+            - db-mysql
+        networks:
+            - laravel
+
+    # nginx
+    nginx:
+        image: nginx:alpine
+        restart: unless-stopped
+        ports:
+            - "80:80"
+            - "443:443"
+        volumes:
+            - ./:/var/www
+            - ./docker/nginx/:/etc/nginx/conf.d/
+        depends_on:
+            - app
+            - redis
+            - db-mysql
+            - maildev
+        networks:
+            - laravel
+
+    node:
+        image: node:22-alpine
+        container_name: node
+        working_dir: /usr/src/app
+        user: node
+        volumes:
+            - ./:/usr/src/app
+            - ./docker/init-scripts/:/init-scripts/
+        entrypoint:
+            - /init-scripts/node_start.sh
+        ports:
+            - "5173:5173"
+        depends_on:
+            - "app"
+        networks:
+            - laravel
+
+    # db mysql
+    db-mysql:
+        image: mysql:8.0.30-debian
+        command: --default-authentication-plugin=mysql_native_password
+            --max_connections=666
+            --bind-address=0.0.0.0
+            --transaction-isolation=READ-COMMITTED
+        restart: unless-stopped
+        environment:
+            MYSQL_ROOT_HOST: "%"
+            MYSQL_DATABASE: ${DB_DATABASE}
+            MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+            MYSQL_PASSWORD: ${DB_PASSWORD}
+            MYSQL_USER: ${DB_USERNAME}
+            MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        volumes:
+            - /opt/mysql_data:/var/lib/mysql
+            - "./create-database.sh:/docker-entrypoint-initdb.d/10-create-testing-database.sh"
+        ports:
+            - "3388:3306"
+        networks:
+            - laravel
+        healthcheck:
+            test: ["CMD", "mysqladmin", "ping", "-p${DB_PASSWORD}"]
+            retries: 3
+            timeout: 5s
+
+    phpmyadmin:
+        image: phpmyadmin/phpmyadmin
+        ports:
+            - 8082:80
+        environment:
+            PMA_HOSTS: db-mysql
+            PMA_PORT: 3388
+            MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-userpass}
+        networks:
+            - laravel
+
+    maildev:
+        image: maildev/maildev
+        container_name: "maildev"
+        ports:
+            - "1025:1025"
+            - "1080:1080"
+        networks:
+            - laravel
+
+    # redis
+    redis:
+        image: redis:alpine
+        ports:
+            - "6379:6379"
+        networks:
+            - laravel
+
+    supervisor:
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        container_name: supervisor
+        volumes:
+            - ./src:/var/www/html
+        networks:
+            - laravel
+
+networks:
+    laravel:
+        driver: bridge
+
+volumes:
+    pg-data:
